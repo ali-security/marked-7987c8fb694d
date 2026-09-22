@@ -1,70 +1,55 @@
 name: "Tests"
 on:
-  pull_request:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Optional test selector forwarded to jasmine (e.g. test/unit/Lexer-spec.js). Empty runs the full suite."
+        required: false
+        default: ""
+        type: string
 
 jobs:
   Test:
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     strategy:
+      fail-fast: false
       matrix:
-        node_version: ['lts/*', 'node']
+        # Upstream ran ['lts/*', 'node'], which on the 2021-05-27 release date
+        # resolved to Node 14 and Node 16. Pinned to those so the legs stay at
+        # the runtimes upstream actually tested instead of floating to today's
+        # Node. Node 8 is not testable: the locked jasmine 3.7.0 ships
+        # lib/loader.js with a dynamic import(), a parse-time SyntaxError there.
+        node_version: ['14', '16']
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: Install Node
-        uses: dcodeIO/setup-node-nvm@master
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node_version }}
       - name: Install Dependencies
-        run: npm ci
+        run: npm ci --registry=https://:2021-05-27T00%3A00%3A00.000Z@time-machines-npm.sealsecurity.io/
       - name: Run Unit Tests 👩🏽‍💻
-        run: npm run test:unit
-      - name: Run Spec Tests 👩🏽‍💻
-        run: npm run test:specs
-
-  Lint:
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
-      - name: Install Dependencies
-        run: npm ci
-      - name: Lint ✨
-        run: npm run test:lint
-
-  Release:
-    needs: [Test, Lint]
-    if: |
-      github.ref == 'refs/heads/master' &&
-      github.event.repository.fork == false
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
-      - name: Install Dependencies
-        run: npm ci
-      - name: Build 🗜️
         run: |
-          npm run build
-          if ! git diff --quiet; then
-            git config --global user.email "<>"
-            git config --global user.name "MarkedJS bot"
-            git commit -am "🗜️ build [skip ci]"
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            npm test -- ${{ inputs.test-filter }}
+          else
+            npm run test:unit
           fi
-      - name: Release 🎉
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npx semantic-release
-
-  Skip:
-    if: contains(github.event.head_commit.message, '[skip ci]')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Skip CI 🚫
-        run: echo skip ci
+      - name: Run Spec Tests 👩🏽‍💻
+        if: inputs.test-filter == ''
+        run: npm run test:specs
+      - name: Pin npm to the release-time packer
+        if: matrix.node_version == '14'
+        run: npm i -g npm@7.12.0
+      - name: Pack 📦
+        if: matrix.node_version == '14'
+        run: npm pack
+      - name: Upload Package Artifact
+        if: matrix.node_version == '14'
+        uses: actions/upload-artifact@v4
+        with:
+          name: marked-2.0.6-tgz
+          path: marked-2.0.6.tgz
+          if-no-files-found: error
